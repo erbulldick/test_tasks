@@ -1,91 +1,83 @@
 import pyodbc
 
-class SwimCompetitions:
+class CoachAnalyzer:
     def __init__(self):
-        self.connection = self.connect_db()
-
-    def connect_db(self):
-        connection_to_db = pyodbc.connect(
+        self.connection_to_db = pyodbc.connect(
             r'Driver={SQL Server};Server={};Database=SwimCompetitions2021;Trusted_Connection=yes;')
-        return connection_to_db
 
-    def get_year(self):
-        with self.connection.cursor() as cursor:
-            sql = "SELECT CompetitionId FROM Competition"
-            cursor.execute(sql)
-            values = cursor.fetchall()
-            lst_id_competition = []
-            for i in values:
-                lst_id_competition.append(i[0])
-
-        return lst_id_competition
-
-    def get_distanse_style(self):
-        with self.connection.cursor() as cursor:
-            sql = f"SELECT Distanse, Style FROM Result"
-            cursor.execute(sql)
-            values = cursor.fetchall()
-        lst_1 = [i[0] for i in values]
-        lst_2 = [i[1] for i in values]
-        lst_style = set(lst_2)
-        lst_distance = set(lst_1)
-
-        return lst_style, lst_distance
-
-    def get_coach(self):
-        with self.connection.cursor() as cursor:
-            sql = "SELECT CoachId, FirstName, LastName FROM Coach"
-            cursor.execute(sql)
-            value = cursor.fetchall()
-        lst_coach = {i[0]: 0 for i in value}
-
-        return lst_coach
-
-    def get_id_swimmer(self, lst_distance, lst_style, lst_id_competition):
-        lst_coach = self.get_coach()
+    def get_top_coaches(self):
+        lst_id_competition = self._get_competition_ids()
+        values_style = self._get_distinct_values("Style")
+        values_dist = self._get_distinct_values("Distanse")
+        coach_ids = self._get_coach_ids()
+        lst_coach = {coach_id: 0 for coach_id in coach_ids}
 
         for id_competition in lst_id_competition:
-            for style in lst_style:
-                for distance in lst_distance:
-                    with self.connection.cursor() as cursor:
-                        sql1 = f"SELECT TOP 3 DeclaredTime, SwimmerId FROM Result" \
-                               f" WHERE Distanse = {distance} and Style = '{style}' and CompetitionId = {id_competition}  ORDER BY DeclaredTime ASC"
-                        cursor.execute(sql1)
-                        values1 = cursor.fetchall()
-                    for i in values1:
-                        with self.connection.cursor() as cursor:
-                            for place, time in enumerate(i):
-                                sql = f"SELECT CoachId FROM Swimmer" \
-                                       f" WHERE SwimmerId = '{i[1]}'"
-                                cursor.execute(sql)
-                                id_coach = cursor.fetchone()
-                                element = lst_coach.get(id_coach[0], 0)
-                                if place == 0:
-                                    element += 3
-                                elif place == 1:
-                                    element += 2
-                                elif place == 2:
-                                    element += 1
-                                lst_coach[id_coach[0]] = element
+            for style in values_style:
+                for distance in values_dist:
+                    lst_id_swimmer = self._get_top_3_swimmers(id_competition, style, distance)
+                    for place, (declared_time, swimmer_id) in enumerate(lst_id_swimmer):
+                        id_coach = self._get_coach_id(swimmer_id)
+                        element = lst_coach.get(id_coach, 0)
+                        element += (3 - place)
+                        lst_coach[id_coach] = element
 
-        sorted_dict = dict(sorted(lst_coach.items(), key=lambda x: x[1], reverse=True))
-        first_ten_values = dict(list(sorted_dict.items())[:10])
-        with self.connection.cursor() as cursor:
-            sql = f"SELECT CoachId, FirstName, LastName FROM Coach WHERE CoachId IN ({', '.join(str(key) for key in first_ten_values)})"
-            cursor.execute(sql)
-            results = cursor.fetchall()
+        sorted_coaches = sorted(lst_coach.items(), key=lambda x: x[1], reverse=True)
+        top_10_coaches = sorted_coaches[:10]
+        result_list = self._get_coach_results(top_10_coaches)
 
-        first_ten_values = {f"{row[1]} {row[2]}": first_ten_values[key] for key, row in zip(first_ten_values, results)}
+        return result_list
 
-        return first_ten_values
+    def _get_competition_ids(self):
+        with self.connection_to_db.cursor() as cursor:
+            cursor.execute("SELECT CompetitionId FROM Competition")
+            return [i[0] for i in cursor.fetchall()]
 
-    def main(self):
-        lst_id_competition = self.get_year()
-        lst_style, lst_distance = self.get_distanse_style()
-        self.get_coach()
-        print(self.get_id_swimmer(lst_distance, lst_style, lst_id_competition))
+    def _get_distinct_values(self, column_name):
+        with self.connection_to_db.cursor() as cursor:
+            cursor.execute(f"SELECT DISTINCT {column_name} FROM Result")
+            return [i[0] for i in cursor.fetchall()]
 
+    def _get_coach_ids(self):
+        with self.connection_to_db.cursor() as cursor:
+            cursor.execute("SELECT CoachId FROM Coach")
+            return [i[0] for i in cursor.fetchall()]
 
-if __name__ == '__main__':
-    swim_competitions = SwimCompetitions()
-    swim_competitions.main()
+    def _get_top_3_swimmers(self, competition_id, style, distance):
+        with self.connection_to_db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT TOP 3 DeclaredTime, SwimmerId
+                FROM Result
+                WHERE Distanse = ? AND Style = ? AND CompetitionId = ?
+                ORDER BY DeclaredTime ASC
+                """,
+                (distance, style, competition_id),
+            )
+            return cursor.fetchall()
+
+    def _get_coach_id(self, swimmer_id):
+        with self.connection_to_db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT CoachId
+                FROM Swimmer
+                WHERE SwimmerId = ?
+                """,
+                (swimmer_id,),
+            )
+            return cursor.fetchone()[0]
+
+    def _get_coach_results(self, top_coaches):
+        result_list = []
+        with self.connection_to_db.cursor() as cursor:
+            for key in top_coaches:
+                cursor.execute("SELECT FirstName, LastName FROM Coach WHERE CoachId = ?", (key[0],))
+                results = cursor.fetchone()
+                result_list.append({
+                    'Coach': f'{results[0]} {results[1]}',
+                    'ratingSum': key[1]})
+        return result_list
+
+coach_analyzer = CoachAnalyzer()
+print(coach_analyzer.get_top_coaches())
